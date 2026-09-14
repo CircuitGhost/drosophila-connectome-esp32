@@ -1,180 +1,108 @@
 # Drosophila Connectome Central Complex (CX) Flight Simulator
 
-A small neuromorphic flight simulator based on research into the *Drosophila melanogaster* Central Complex (CX), including connectome work from Google Research, Janelia Research Campus, and FlyWire.
+A neuromorphic flight simulator based on research into the *Drosophila melanogaster* Central Complex (CX), including connectome reconstructions from Google Research, Janelia Research Campus, and FlyWire.
 
-The goal is to take some of the neural circuits involved in navigation, heading estimation, visual landmark learning, and reinforcement and turn them into something that can run in real time on an ESP32-C6.
+This project implements the core neural circuits involved in heading estimation, visual landmark learning, vector arithmetic, and reinforcement learning in real-time on an ESP32-C6 microcontroller.
 
-Current hardware:
+### Hardware
 
-* ESP32-C6, 160 MHz RISC-V
-* Waveshare 1.47" ST7789 display
-* 172×320 resolution
+* **MCU**: ESP32-C6 (160 MHz 32-bit RISC-V)
+* **Display**: Waveshare 1.47" ST7789 LCD (172×320, 80 MHz SPI)
 
 ---
 
-## Neuroscience / circuit model
+## Neural Circuit Architecture
 
-The model is loosely organized around the same major pathways seen in the fly Central Complex:
+The model is organized around the primary functional pathways of the fruit fly Central Complex:
 
-```text
-[Visual Patterns on Corridor Walls]
-                │
-                ▼
-       Ring Neurons (ER)
-                │
-                │  plastic visual connections
-                ▼
-      E-PG Compass Neurons
-   (Ellipsoid Body ring attractor)
-          ▲             │
-          │             ▼
-      P-EN / P-EG Neurons
-  (angular velocity / bump shift)
-                        │
-                        ▼
-          Fan-shaped Body
-       (FB columnar neurons)
-                ▲
-                │
-             Dopamine
-                │
-                ▼
-       Motor Steering Output
-      (veer left / veer right)
+```
+ [Visual Patterns on Corridor Walls]
+                  │
+                  ▼
+         Ring Neurons (ER)
+                  │
+                  │  Plastic Visual Synapses
+                  ▼
+        E-PG Compass Neurons
+   (Ellipsoid Body Ring Attractor)
+            ▲             │
+            │             ▼
+        P-EN / P-EG Neurons
+   (Angular Velocity / Yaw Shift)
+                          │
+                          ▼
+            Fan-shaped Body (FB) ◄─── Dopamine (DANs)
+          (Columnar Vector Math)
+                          │
+                          ▼
+                Motor Steering Output
+               (Veer Left / Veer Right)
 ```
 
-This isn't intended to simulate every neuron in a fly brain. The idea is to reproduce a few of the interesting computational structures in the CX with a model small enough to run interactively on a microcontroller.
+### 1. Compass Ring Attractor ($E\text{-}PG$ Wedges)
 
-### 1. Compass ring attractor — E-PG wedges
+The Ellipsoid Body is modeled as 16 discrete wedges. Neural activity forms a localized "bump" around this ring, serving as the fly's internal heading estimate. Recurrent cosine excitation maintains the bump, while global inhibition prevents broad activation.
 
-The Ellipsoid Body is represented as 16 discrete wedges.
+Angular velocity ($\Delta\theta$) from the Protocerebral Bridge ($P\text{-}EN / P\text{-}EG$) shifts the bump left or right as the fly turns:
 
-E-PG activity forms a moving "bump" around this ring, which acts as the fly's internal estimate of heading. Local excitation keeps the bump together while broader inhibition prevents the entire ring from becoming active at once.
+$$V_i(t+1) = \text{ReLU}\left( V_i(t) + \sum_j W_{ij}^{\text{recurrent}} V_j(t) + \beta \cdot \text{Shift}(\Delta\theta) + I_i^{\text{visual}} \right)$$
 
-P-EN / P-EG activity shifts that bump left or right as the simulated fly turns.
+### 2. Visual Landmark Learning ($ER \to E\text{-}PG$)
 
-$$
-V_i(t+1) =
-\text{ReLU}\left(
-V_i(t)
-+ \sum_j W_{ij}^{recurrent}V_j(t)
-+ \beta \cdot \text{Shift}(\Delta\theta)
-+ I_i^{visual}
-\right)
-$$
+Visual input is partitioned into 16 azimuthal sectors represented by Ring Neurons ($ER$). These form plastic inhibitory synapses onto the compass neurons ($E\text{-}PG$).
 
-In practice, this gives the fly an internal compass that continues to update even while visual input is changing.
+Using an anti-Hebbian plasticity rule, the fly continuously binds corridor landmark patterns to its heading:
 
-### 2. Visual landmark learning — ER → E-PG
+$$W_{k,i}(t+1) = W_{k,i}(t) - \eta \cdot ER_k \cdot EPG_i$$
 
-Visual input is divided into 16 azimuthal sectors represented by Ring Neurons (ER).
+### 3. Goal-Directed Steering & Reinforcement Learning
 
-These feed into the E-PG compass through plastic inhibitory connections. Rather than giving the fly a pre-programmed map of the corridor, the weights can adapt as it experiences repeated visual patterns.
+The Fan-shaped Body ($FB$) stores a goal vector. Columnar neurons ($P\text{-}FN$ and $h\Delta$) perform vector subtraction between current heading and goal direction, producing asymmetric left/right motor bias:
 
-The current implementation uses a simple anti-Hebbian update:
+$$\text{Steer} = \sum_{i=1}^{8} PFN_i^{\text{Left}} - \sum_{i=9}^{16} PFN_i^{\text{Right}}$$
 
-$$
-W_{k,i}(t+1)
-=
-W_{k,i}(t)
--
-\eta \cdot ER_k \cdot EPG_i
-$$
+Dopaminergic neurons ($DANs$) modulate steering preferences based on experience:
+* **Wall collisions**: Trigger a $PPL1$-like penalty signal, deflecting the travel vector away from obstacles.
+* **Centered flight**: Triggers a $PAM$-like reward signal, reinforcing stable forward navigation.
 
-The result is a crude form of visual calibration: repeated landmarks start influencing the compass state based on what the fly has previously experienced.
+### 4. Giant Fiber Threat Evasion Reflex
 
-### 3. Goal-directed steering and reinforcement
+A looming visual shadow activates the Giant Fiber escape circuit. The fly's escape agility is directly scaled by its learned intelligence score ($IQ$):
 
-The Fan-shaped Body provides the goal/navigation side of the model.
-
-A desired travel direction is compared against the current compass heading, with P-FN and hΔ-inspired pathways producing a steering bias.
-
-A simplified version of the steering output is:
-
-$$
-\text{Steer}
-=
-\sum_{i=1}^{8} PFN_i^{Left}
--
-\sum_{i=9}^{16} PFN_i^{Right}
-$$
-
-That value becomes the motor command that pushes the fly left or right.
-
-There is also a small reinforcement layer using dopamine-inspired reward and penalty signals.
-
-* Wall collisions produce a PPL1-like penalty signal.
-* Stable, centered flight produces a PAM-like reward signal.
-* Those signals gradually alter the fly's preferred steering behavior.
-
-So the fly isn't following a fixed path. Its behavior changes as it flies, hits things, and successfully moves through the corridor.
-
-### 4. Giant Fiber predator reflex
-
-The simulator also includes a deliberately simpler circuit: a looming-shadow escape response inspired by the Giant Fiber System.
-
-When a large visual threat appears, the fly gets a short window to evade it.
-
-Its chance of escaping is influenced by its current learned behavior / "IQ" score.
-
-Fail to move far enough before the strike and the fly gets **EATEN**.
-
-Its learned state then resets to 0%.
-
-This part is less about faithfully reproducing the full Giant Fiber circuit and more about giving the learned navigation system a visible consequence.
+* **Naive Fly ($IQ < 30\%$)**: Sluggish reaction time and weak evasion; fails to clear the shadow in time and gets **EATEN** (resetting intelligence to $0\%$).
+* **Trained Fly ($IQ > 60\%$)**: Executes an instant, high-speed evasive bank into open corridor space.
 
 ---
 
-## Display layout
+## Display Layout (172×320)
 
-The UI is designed around the 172×320 Waveshare LCD.
-
-### Top viewport — 172×160
-
-The upper half of the screen shows the actual simulation:
-
-* 2D corridor viewed from above
-* Scrolling wall textures used as visual landmarks
-* Animated fly
-* Physical wall collisions
-* Predator / looming-shadow events
-
-The visual environment isn't just decoration. The wall patterns are also the input used by the ER visual-learning portion of the model.
-
-### Bottom viewport — 172×160
-
-The lower half displays real-time telemetry from the Central Complex:
-
-* **Outer Ring**: 16 ER visual units indicating active optical flow inputs around the fly.
-* **Inner Ring**: 16 E-PG wedges displaying the rotating activity bump (biological compass).
-* **Green Vector**: Desired travel heading stored in the Fan-shaped Body.
-* **Orange Pointer**: Current decoded compass heading.
-* **Metrics**: Real-time `IQ: XX%` score, synaptic plasticity delta (`DW`), and steering bias.
+| Viewport | Description |
+| :--- | :--- |
+| **Top (172×160)** | **2D Optic Flow Arena**: Top-down view of the scrolling corridor, animated fly avatar, physical wall boundaries, and looming predator shadow. |
+| **Bottom (172×160)** | **Central Complex Monitor**: Outer ring of 16 $ER$ visual nodes, inner ring of 16 $E\text{-}PG$ compass nodes, green $FB$ goal vector, orange compass pointer, and live `IQ: XX%` telemetry. |
 
 ---
 
-## Hardware Controls
+## Controls & Indicators
 
 * **`BOOT` Button (GPIO 9)**:
-  * **Short Tap**: Negative reinforcement / electric shock penalty ($PPL1$ Dopamine burst).
-  * **Long Hold (>350ms)**: Manually summons a looming predator attack to test the fly's learned evasion reflex.
-* **`RST` Button**: Hardware chip reset (reboots ESP32 and resets intelligence to 0%).
+  * *Tap*: Administer electric shock penalty ($PPL1$ dopamine burst + red flash).
+  * *Hold (>350ms)*: Manually summon a looming predator attack to test evasion capability.
+* **`RST` Button**: Hardware chip reset (reboots MCU and wipes neural weights to clean slate).
 * **Onboard RGB LED (GPIO 8)**:
-  * 🔴 **Red Flash**: Wall collision, shock penalty, or predator threat.
-  * 🟢 **Green Pulse**: Centered cruising reward (PAM Dopamine cluster).
+  * 🔴 **Red Flash**: Wall collision, shock penalty, or predator attack.
+  * 🟢 **Green Pulse**: Centered cruising reward ($PAM$ cluster).
   * 🔵 **Dim Blue**: Steady cruising.
 
 ---
 
 ## Building & Flashing
 
-Built with [PlatformIO](https://platformio.org/):
-
 ```bash
 # Build firmware
 pio run
 
-# Flash to board
+# Flash to device
 pio run -t upload
 ```
 
@@ -182,4 +110,4 @@ pio run -t upload
 
 ## License
 
-MIT
+[MIT](LICENSE)
